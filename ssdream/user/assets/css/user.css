@@ -1,0 +1,147 @@
+/**
+ * Social Service Dream - User Dashboard Stylesheet
+ */
+
+:root {
+  --user-sidebar-width: 260px;
+  --user-bg: #f8fafc;
+  --user-navy: #0b192c;
+  --user-card-border: #e2e8f0;
+}
+
+body.user-body {
+  background-color: var(--user-bg);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.user-wrapper {
+  display: flex;
+  flex: 1;
+}
+
+.user-sidebar {
+  width: var(--user-sidebar-width);
+  background: #0b192c;
+  color: #94a3b8;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.user-sidebar-brand {
+  padding: 1.5rem 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.user-nav-link {
+  color: #94a3b8;
+  padding: 0.75rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.92rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  border-left: 3px solid transparent;
+}
+
+.user-nav-link:hover,
+.user-nav-link.active {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.05);
+  border-left-color: #00b4d8;
+}
+
+.user-content {
+  flex: 1;
+  padding: 1.75rem;
+  overflow-x: hidden;
+}
+
+.stat-card {
+  background: #ffffff;
+  border: 1px solid var(--user-card-border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 20px -3px rgba(11, 25, 44, 0.08);
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+}
+
+.referral-box {
+  background: linear-gradient(135deg, #1e3e62 0%, #0b192c 100%);
+  color: #ffffff;
+  border-radius: 14px;
+  padding: 1.5rem;
+}
+
+/* Part 4: 2x2 Binary Tree Visualization Styles */
+.text-xxs {
+  font-size: 0.72rem;
+}
+
+.tree-node-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  user-select: none;
+}
+
+.tree-node-card.member-node:hover {
+  transform: translateY(-4px) scale(1.02);
+  box-shadow: 0 10px 25px -5px rgba(0, 102, 204, 0.2) !important;
+  z-index: 5;
+}
+
+.tree-node-card.empty-node {
+  border-style: dashed !important;
+  border-color: #cbd5e1 !important;
+}
+
+.tree-row {
+  position: relative;
+}
+
+.shadow-xs {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.transition-hover {
+  transition: all 0.2s ease-in-out;
+}
+
+/* Responsive horizontal scrolling for mobile tree */
+#tree-canvas-container {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #f1f5f9;
+}
+
+#tree-canvas-container::-webkit-scrollbar {
+  height: 8px;
+}
+
+#tree-canvas-container::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+#tree-canvas-container::-webkit-scrollbar-thumb {
+  background-color: #94a3b8;
+  border-radius: 4px;
+}

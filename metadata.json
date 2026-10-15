@@ -1,0 +1,6 @@
+{
+  "name": "Social Service Dream",
+  "description": "Complete professional PHP 8+ and MySQL web application for Social Service Dream with 7-level binary team structure and income categories.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
