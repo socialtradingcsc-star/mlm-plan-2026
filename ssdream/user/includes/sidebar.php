@@ -102,7 +102,12 @@ $unreadNotifs = getUnreadNotificationCount((int)($_SESSION['user_id'] ?? 0));
             <?php endif; ?>
         </a>
 
-        <!-- 13. Logout -->
+        <!-- 13. Settings (Activated in Part 8) -->
+        <a href="<?php echo BASE_URL; ?>/user/settings.php" class="user-nav-link <?php echo ($currentPage === 'settings.php') ? 'active' : ''; ?>">
+            <i class="bi bi-gear"></i> Settings
+        </a>
+
+        <!-- Logout -->
         <a href="<?php echo BASE_URL; ?>/logout.php" class="user-nav-link text-danger mt-2 border-top border-secondary border-opacity-25">
             <i class="bi bi-box-arrow-right"></i> Logout
         </a>

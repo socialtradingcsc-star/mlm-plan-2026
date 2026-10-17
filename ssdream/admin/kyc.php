@@ -251,8 +251,8 @@ require_once __DIR__ . '/includes/header.php';
                                 </td>
                                 <td>
                                     <?php if (!empty($k['pan_card_path'])): ?>
-                                        <a href="<?php echo BASE_URL . '/' . e($k['pan_card_path']); ?>" target="_blank" class="btn btn-sm btn-outline-info">
-                                            <i class="bi bi-file-earmark-arrow-down me-1"></i> View Document
+                                        <a href="<?php echo BASE_URL . '/user/kyc-download.php?id=' . (int)$k['id']; ?>" target="_blank" class="btn btn-sm btn-outline-info">
+                                            <i class="bi bi-file-earmark-arrow-down me-1"></i> View Secure Document
                                         </a>
                                     <?php else: ?>
                                         <span class="badge bg-secondary text-white-50">No file uploaded</span>

@@ -12,6 +12,10 @@ require_once dirname(__DIR__) . '/includes/functions.php';
 
 // Handle Logout action
 if (isset($_GET['action']) && $_GET['action'] === 'logout') {
+    $adminId = $_SESSION['admin_id'] ?? 0;
+    if ($adminId > 0) {
+        logAdminActivity((int)$adminId, 'ADMIN_LOGOUT', 'system', null, 'Admin signed out securely.');
+    }
     unset(
         $_SESSION['admin_logged_in'],
         $_SESSION['admin_id'],
@@ -19,9 +23,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'logout') {
         $_SESSION['admin_name'],
         $_SESSION['admin_role']
     );
-    if (session_status() === PHP_SESSION_ACTIVE) {
-        session_regenerate_id(true);
-    }
+    Security::regenerateSession();
     setFlashMessage('info', "Admin session ended securely.");
     header("Location: " . BASE_URL . "/admin/login.php");
     exit;
@@ -37,8 +39,13 @@ $errors = [];
 $adminUserInput = Security::sanitizeUsername($_POST['admin_username'] ?? '');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // 1. Verify CSRF
-    if (!Security::verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+    // 1. Verify Rate Limit (Brute Force Protection)
+    if (!checkRateLimit('admin_login', 5, 15)) {
+        $errors[] = "Too many failed admin login attempts. Admin portal temporarily locked for 15 minutes for security.";
+    }
+
+    // 2. Verify CSRF
+    if (empty($errors) && !Security::verifyCsrfToken($_POST['csrf_token'] ?? '')) {
         $errors[] = "Security token mismatch. Please try again.";
     }
 
@@ -78,21 +85,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 if ($isValid && $admin['status'] === 'active') {
-                    session_regenerate_id(true);
+                    clearRateLimit('admin_login');
+                    Security::regenerateSession();
+
                     $_SESSION['admin_logged_in'] = true;
                     $_SESSION['admin_id']        = (int)$admin['id'];
                     $_SESSION['admin_username']  = $admin['username'];
                     $_SESSION['admin_name']      = $admin['full_name'];
                     $_SESSION['admin_role']      = $admin['role'];
 
+                    logAdminActivity((int)$admin['id'], 'ADMIN_LOGIN', 'system', null, 'Admin authenticated successfully.');
+
                     setFlashMessage('success', "Welcome to the Administration Console, " . $admin['full_name'] . ".");
                     header("Location: " . BASE_URL . "/admin/index.php");
                     exit;
                 } else {
+                    recordFailedAttempt('admin_login');
                     $errors[] = "Invalid administrator credentials or inactive access.";
                 }
             } catch (PDOException $e) {
-                $errors[] = "Database error: " . $e->getMessage();
+                error_log("Admin Login Error: " . $e->getMessage());
+                $errors[] = "Database security error. Access blocked.";
             }
         }
     }

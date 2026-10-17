@@ -1,0 +1,24 @@
+# =======================================================
+# Social Service Dream - Uploads Security Configuration
+# Target: C:\xampp\htdocs\ssdream\uploads\.htaccess
+# Prevents execution of arbitrary PHP/CGI scripts in upload directory
+# =======================================================
+
+# Disable Directory Browsing
+Options -Indexes
+
+# Disable PHP script execution in uploads directory
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag engine off
+</IfModule>
+
+# Block execution of dangerous script files
+<FilesMatch "\.(php|phtml|php3|php4|php5|phps|phar|js|sh|exe|pl|py|cgi)$">
+    Require all denied
+</FilesMatch>

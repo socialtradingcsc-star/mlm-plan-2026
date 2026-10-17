@@ -1,7 +1,7 @@
 <?php
 /**
  * Social Service Dream - Security Foundation
- * CSRF Protection, Input Sanitization, Output Escaping, and Authentication Guards
+ * CSRF Protection, Input Sanitization, Output Escaping, Rate Limiting, File Validation, and Authentication Guards
  */
 
 require_once __DIR__ . '/config.php';
@@ -12,6 +12,7 @@ if (!headers_sent()) {
     header("X-Frame-Options: SAMEORIGIN");
     header("X-XSS-Protection: 1; mode=block");
     header("Referrer-Policy: strict-origin-when-cross-origin");
+    header("Permissions-Policy: geolocation=(), camera=(), microphone=()");
 }
 
 class Security {
@@ -115,6 +116,81 @@ class Security {
     }
 
     /**
+     * Regenerate session ID after authentication changes (Fixation protection)
+     */
+    public static function regenerateSession(): void {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_regenerate_id(true);
+        }
+    }
+
+    /**
+     * Validate uploaded file (Extension, MIME type, Size, Executable blocking)
+     * 
+     * @param array $file $_FILES['input_name']
+     * @param array $allowedExtensions Default: ['jpg', 'jpeg', 'png', 'pdf']
+     * @param int $maxSizeBytes Default: 5MB
+     * @return array ['valid' => bool, 'message' => string, 'extension' => string]
+     */
+    public static function validateUploadedFile(array $file, array $allowedExtensions = ['jpg', 'jpeg', 'png', 'pdf'], int $maxSizeBytes = 5242880): array {
+        if (!isset($file['error']) || is_array($file['error'])) {
+            return ['valid' => false, 'message' => 'Invalid upload parameter structure.'];
+        }
+
+        switch ($file['error']) {
+            case UPLOAD_ERR_OK:
+                break;
+            case UPLOAD_ERR_NO_FILE:
+                return ['valid' => false, 'message' => 'No file uploaded.'];
+            case UPLOAD_ERR_INI_SIZE:
+            case UPLOAD_ERR_FORM_SIZE:
+                return ['valid' => false, 'message' => 'Exceeded maximum allowable upload size limit.'];
+            default:
+                return ['valid' => false, 'message' => 'Unknown file upload error.'];
+        }
+
+        if ($file['size'] > $maxSizeBytes) {
+            return ['valid' => false, 'message' => 'File size exceeds maximum permitted limit (' . round($maxSizeBytes / 1048576) . ' MB).'];
+        }
+
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if (!in_array($ext, $allowedExtensions, true)) {
+            return ['valid' => false, 'message' => 'Unsupported file extension. Permitted types: ' . implode(', ', $allowedExtensions)];
+        }
+
+        // Check for dangerous double extensions or script extensions
+        $dangerousExts = ['php', 'phtml', 'php3', 'php4', 'php5', 'phps', 'phar', 'js', 'sh', 'exe', 'cgi', 'pl', 'py', 'asp', 'aspx', 'jsp'];
+        if (in_array($ext, $dangerousExts, true)) {
+            return ['valid' => false, 'message' => 'Executable script uploads are strictly prohibited.'];
+        }
+
+        // Verify MIME type using finfo
+        if (function_exists('finfo_open')) {
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $mime = finfo_file($finfo, $file['tmp_name']);
+            finfo_close($finfo);
+
+            $allowedMimes = [
+                'jpg'  => ['image/jpeg', 'image/pjpeg'],
+                'jpeg' => ['image/jpeg', 'image/pjpeg'],
+                'png'  => ['image/png', 'image/x-png'],
+                'pdf'  => ['application/pdf', 'application/x-pdf']
+            ];
+
+            $expectedMimes = $allowedMimes[$ext] ?? [];
+            if (!empty($expectedMimes) && !in_array($mime, $expectedMimes, true)) {
+                return ['valid' => false, 'message' => 'File MIME type mismatch. Upload rejected for security.'];
+            }
+        }
+
+        return [
+            'valid'     => true,
+            'message'   => 'File is valid.',
+            'extension' => $ext
+        ];
+    }
+
+    /**
      * Guard: Ensure user is authenticated, otherwise redirect to login
      */
     public static function requireUserAuth(): void {
@@ -141,96 +217,119 @@ class Security {
 // REUSABLE AUTHENTICATION & SECURITY PROCEDURAL FUNCTIONS
 // =======================================================
 
-/**
- * Check if a regular user is logged in
- * 
- * @return bool
- */
 function isUserLoggedIn(): bool {
     return !empty($_SESSION['user_logged_in']) && !empty($_SESSION['user_id']);
 }
 
-/**
- * Enforce user login on protected pages
- */
 function requireUserLogin(): void {
-    if (!isUserLoggedIn()) {
-        if (!isset($_SESSION['flash'])) {
-            $_SESSION['flash'] = [];
-        }
-        $_SESSION['flash']['warning'] = "Please log in to access this page.";
-        header("Location: " . BASE_URL . "/login.php");
-        exit;
-    }
+    Security::requireUserAuth();
 }
 
-/**
- * Check if an administrator is logged in
- * 
- * @return bool
- */
 function isAdminLoggedIn(): bool {
     return !empty($_SESSION['admin_logged_in']) && !empty($_SESSION['admin_id']);
 }
 
-/**
- * Enforce admin login on admin pages
- */
 function requireAdminLogin(): void {
-    if (!isAdminLoggedIn()) {
-        if (!isset($_SESSION['flash'])) {
-            $_SESSION['flash'] = [];
-        }
-        $_SESSION['flash']['danger'] = "Admin credentials required. Please sign in.";
-        header("Location: " . BASE_URL . "/admin/login.php");
-        exit;
-    }
+    Security::requireAdminAuth();
 }
 
-/**
- * Generate CSRF token string
- * 
- * @return string
- */
 function csrfToken(): string {
     return Security::getCsrfToken();
 }
 
-/**
- * Render hidden CSRF form input field
- * 
- * @return string
- */
 function csrfField(): string {
     return Security::csrfField();
 }
 
-/**
- * Verify submitted CSRF token
- * 
- * @param string|null $token
- * @return bool
- */
 function verifyCsrfToken(?string $token = null): bool {
     return Security::verifyCsrfToken($token);
 }
 
-/**
- * Global helper for HTML escaping
- * 
- * @param mixed $value
- * @return string
- */
 function e($value): string {
     return Security::escape($value);
 }
 
-/**
- * Global helper for input sanitization
- * 
- * @param string|null $value
- * @return string
- */
 function sanitize(?string $value): string {
     return Security::sanitize($value);
+}
+
+/**
+ * IP Rate Limiting Check
+ * 
+ * @param string $actionKey Unique action identifier (e.g. 'login', 'register', 'withdrawal')
+ * @param int $maxAttempts
+ * @param int $lockoutMinutes
+ * @return bool True if permitted, False if locked out
+ */
+function checkRateLimit(string $actionKey, int $maxAttempts = 5, int $lockoutMinutes = 15): bool {
+    $db = Database::getConnection();
+    if (!$db) return true; // Fallback if DB disconnected
+
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+    try {
+        $stmt = $db->prepare("SELECT attempts, last_attempt FROM rate_limits WHERE ip_address = :ip AND action_key = :act LIMIT 1");
+        $stmt->execute(['ip' => $ip, 'act' => $actionKey]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$row) {
+            return true;
+        }
+
+        $lastTime = strtotime($row['last_attempt']);
+        $timeDiffMinutes = (time() - $lastTime) / 60;
+
+        // If lockout window expired, reset rate limit row
+        if ($timeDiffMinutes >= $lockoutMinutes) {
+            $del = $db->prepare("DELETE FROM rate_limits WHERE ip_address = :ip AND action_key = :act");
+            $del->execute(['ip' => $ip, 'act' => $actionKey]);
+            return true;
+        }
+
+        return (int)$row['attempts'] < $maxAttempts;
+    } catch (PDOException $e) {
+        return true;
+    }
+}
+
+/**
+ * Record a failed attempt for Rate Limiting
+ * 
+ * @param string $actionKey
+ */
+function recordFailedAttempt(string $actionKey): void {
+    $db = Database::getConnection();
+    if (!$db) return;
+
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+    try {
+        $stmt = $db->prepare("
+            INSERT INTO rate_limits (ip_address, action_key, attempts, last_attempt)
+            VALUES (:ip, :act, 1, NOW())
+            ON DUPLICATE KEY UPDATE attempts = attempts + 1, last_attempt = NOW()
+        ");
+        $stmt->execute(['ip' => $ip, 'act' => $actionKey]);
+    } catch (PDOException $e) {
+        // Fallback
+    }
+}
+
+/**
+ * Clear rate limit attempts on successful operation
+ * 
+ * @param string $actionKey
+ */
+function clearRateLimit(string $actionKey): void {
+    $db = Database::getConnection();
+    if (!$db) return;
+
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+    try {
+        $stmt = $db->prepare("DELETE FROM rate_limits WHERE ip_address = :ip AND action_key = :act");
+        $stmt->execute(['ip' => $ip, 'act' => $actionKey]);
+    } catch (PDOException $e) {
+        // Fallback
+    }
 }

@@ -2995,4 +2995,876 @@ function getOpenSupportTicketsCount(): int {
     }
 }
 
+// =========================================================================
+// PART 8 FUNCTIONS — REPORTS, NOTIFICATIONS, AUDIT LOGS & SYSTEM UTILITIES
+// =========================================================================
+
+/**
+ * Log Admin Activity into admin_activity_logs table
+ * 
+ * @param int $adminId
+ * @param string $action
+ * @param string|null $targetType
+ * @param int|null $targetId
+ * @param string|null $details
+ * @return bool
+ */
+function logAdminActivity(int $adminId, string $action, ?string $targetType = null, ?int $targetId = null, ?string $details = null): bool {
+    $db = getDb();
+    if (!$db) return false;
+
+    $adminName = $_SESSION['admin_name'] ?? 'administrator';
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+    $agent = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 250);
+
+    try {
+        $stmt = $db->prepare("
+            INSERT INTO admin_activity_logs (admin_id, admin_username, action, target_type, target_id, ip_address, user_agent, details, created_at)
+            VALUES (:aid, :aname, :act, :ttype, :tid, :ip, :ua, :det, NOW())
+        ");
+        return $stmt->execute([
+            'aid'   => $adminId,
+            'aname' => $adminName,
+            'act'   => $action,
+            'ttype' => $targetType,
+            'tid'   => $targetId,
+            'ip'    => $ip,
+            'ua'    => $agent,
+            'det'   => $details
+        ]);
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+/**
+ * Get paginated admin activity audit logs
+ * 
+ * @param array $filters ['action' => '', 'admin_id' => '']
+ * @param int $limit
+ * @param int $offset
+ * @return array ['records' => array, 'total' => int]
+ */
+function getAdminActivityLogs(array $filters = [], int $limit = 20, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['action'])) {
+        $where[] = "action LIKE :act";
+        $params['act'] = '%' . trim($filters['action']) . '%';
+    }
+
+    if (!empty($filters['admin_id'])) {
+        $where[] = "admin_id = :aid";
+        $params['aid'] = (int)$filters['admin_id'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("SELECT COUNT(*) FROM admin_activity_logs WHERE {$whereSql}");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT * FROM admin_activity_logs 
+            WHERE {$whereSql} 
+            ORDER BY id DESC 
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * Send notification to a user
+ * 
+ * @param int $userId
+ * @param string $title
+ * @param string $message
+ * @param string $type ('GENERAL', 'ACCOUNT', 'KYC', 'UPGRADE', 'WITHDRAWAL', 'SUPPORT', 'SYSTEM')
+ * @return bool
+ */
+function sendNotification(int $userId, string $title, string $message, string $type = 'GENERAL'): bool {
+    $db = getDb();
+    if (!$db) return false;
+
+    $validTypes = ['GENERAL', 'ACCOUNT', 'KYC', 'UPGRADE', 'WITHDRAWAL', 'SUPPORT', 'SYSTEM'];
+    $notifType = in_array(strtoupper($type), $validTypes, true) ? strtoupper($type) : 'GENERAL';
+
+    try {
+        $stmt = $db->prepare("
+            INSERT INTO notifications (user_id, title, message, type, is_read, created_at)
+            VALUES (:uid, :title, :msg, :type, 0, NOW())
+        ");
+        return $stmt->execute([
+            'uid'   => $userId,
+            'title' => trim($title),
+            'msg'   => trim($message),
+            'type'  => $notifType
+        ]);
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+/**
+ * Send bulk notifications to multiple specific user IDs
+ * 
+ * @param array $userIds
+ * @param string $title
+ * @param string $message
+ * @param string $type
+ * @return int Count sent
+ */
+function sendBulkNotifications(array $userIds, string $title, string $message, string $type = 'GENERAL'): int {
+    $db = getDb();
+    if (!$db || empty($userIds)) return 0;
+
+    $count = 0;
+    foreach ($userIds as $uid) {
+        if (sendNotification((int)$uid, $title, $message, $type)) {
+            $count++;
+        }
+    }
+    return $count;
+}
+
+/**
+ * Send broadcast notification to all active users
+ * 
+ * @param string $title
+ * @param string $message
+ * @param string $type
+ * @return int Count sent
+ */
+function sendBroadcastNotificationToAllActive(string $title, string $message, string $type = 'GENERAL'): int {
+    $db = getDb();
+    if (!$db) return 0;
+
+    try {
+        $stmt = $db->query("SELECT id FROM users WHERE status = 'active'");
+        $uids = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        return sendBulkNotifications($uids, $title, $message, $type);
+    } catch (PDOException $e) {
+        return 0;
+    }
+}
+
+/**
+ * Fetch paginated user notifications
+ * 
+ * @param int $userId
+ * @param int $limit
+ * @param int $offset
+ * @return array ['records' => array, 'total' => int, 'unread' => int]
+ */
+function getUserNotifications(int $userId, int $limit = 20, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0, 'unread' => 0];
+
+    try {
+        $cStmt = $db->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = :uid");
+        $cStmt->execute(['uid' => $userId]);
+        $total = (int)$cStmt->fetchColumn();
+
+        $uStmt = $db->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = :uid AND (is_read = 0 OR is_read IS NULL)");
+        $uStmt->execute(['uid' => $userId]);
+        $unread = (int)$uStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT * FROM notifications 
+            WHERE user_id = :uid 
+            ORDER BY id DESC 
+            LIMIT :offset, :limit
+        ");
+        $stmt->bindValue(':uid', $userId, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total,
+            'unread'  => $unread
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0, 'unread' => 0];
+    }
+}
+
+/**
+ * Count unread notifications for a user
+ * 
+ * @param int $userId
+ * @return int
+ */
+function getUnreadNotificationCount(int $userId): int {
+    if ($userId <= 0) return 0;
+    $db = getDb();
+    if (!$db) return 0;
+    try {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = :uid AND (is_read = 0 OR is_read IS NULL)");
+        $stmt->execute(['uid' => $userId]);
+        return (int)$stmt->fetchColumn();
+    } catch (PDOException $e) {
+        return 0;
+    }
+}
+
+/**
+ * Mark a notification as read
+ * 
+ * @param int $notificationId
+ * @param int $userId
+ * @return bool
+ */
+function markNotificationAsRead(int $notificationId, int $userId): bool {
+    $db = getDb();
+    if (!$db) return false;
+    try {
+        $stmt = $db->prepare("UPDATE notifications SET is_read = 1 WHERE id = :nid AND user_id = :uid");
+        return $stmt->execute(['nid' => $notificationId, 'uid' => $userId]);
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+/**
+ * Mark all notifications as read for a user
+ * 
+ * @param int $userId
+ * @return bool
+ */
+function markAllNotificationsAsRead(int $userId): bool {
+    $db = getDb();
+    if (!$db) return false;
+    try {
+        $stmt = $db->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = :uid");
+        return $stmt->execute(['uid' => $userId]);
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+/**
+ * REPORT QUERY 1: User Directory Report
+ */
+function getReportUsers(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['date_from'])) {
+        $where[] = "DATE(u.created_at) >= :dfrom";
+        $params['dfrom'] = $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+        $where[] = "DATE(u.created_at) <= :dto";
+        $params['dto'] = $filters['date_to'];
+    }
+    if (!empty($filters['level']) && is_numeric($filters['level'])) {
+        $where[] = "u.current_level = :lvl";
+        $params['lvl'] = (int)$filters['level'];
+    }
+    if (!empty($filters['status']) && in_array($filters['status'], ['active', 'pending', 'blocked'], true)) {
+        $where[] = "u.status = :st";
+        $params['st'] = $filters['status'];
+    }
+    if (!empty($filters['sponsor'])) {
+        $where[] = "(s.username LIKE :sp OR u.sponsor_id = :sp_id)";
+        $params['sp'] = '%' . trim($filters['sponsor']) . '%';
+        $params['sp_id'] = (int)$filters['sponsor'];
+    }
+    if (!empty($filters['search'])) {
+        $where[] = "(u.username LIKE :q OR u.full_name LIKE :q OR u.email LIKE :q OR u.mobile LIKE :q)";
+        $params['q'] = '%' . trim($filters['search']) . '%';
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(*) 
+            FROM users u
+            LEFT JOIN users s ON u.sponsor_id = s.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT u.id, u.username, u.full_name, u.mobile, u.email, u.current_level, u.status, u.created_at,
+                   s.username as sponsor_username, s.full_name as sponsor_name
+            FROM users u
+            LEFT JOIN users s ON u.sponsor_id = s.id
+            WHERE {$whereSql}
+            ORDER BY u.id DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 2: Income Earnings Report
+ */
+function getReportIncomes(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['user'])) {
+        $where[] = "(u.username LIKE :usr OR u.full_name LIKE :usr OR inc.user_id = :uid)";
+        $params['usr'] = '%' . trim($filters['user']) . '%';
+        $params['uid'] = (int)$filters['user'];
+    }
+    if (!empty($filters['type']) && in_array(strtoupper($filters['type']), ['DIRECT', 'LEVEL', 'SPONSOR'], true)) {
+        $where[] = "inc.income_type = :itype";
+        $params['itype'] = strtoupper($filters['type']);
+    }
+    if (!empty($filters['level']) && is_numeric($filters['level'])) {
+        $where[] = "inc.level = :lvl";
+        $params['lvl'] = (int)$filters['level'];
+    }
+    if (!empty($filters['date_from'])) {
+        $where[] = "DATE(inc.created_at) >= :dfrom";
+        $params['dfrom'] = $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+        $where[] = "DATE(inc.created_at) <= :dto";
+        $params['dto'] = $filters['date_to'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(*) 
+            FROM incomes inc
+            JOIN users u ON inc.user_id = u.id
+            LEFT JOIN users src ON inc.source_user_id = src.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT inc.*, u.username, u.full_name,
+                   src.username as source_username, src.full_name as source_full_name
+            FROM incomes inc
+            JOIN users u ON inc.user_id = u.id
+            LEFT JOIN users src ON inc.source_user_id = src.id
+            WHERE {$whereSql}
+            ORDER BY inc.id DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 2 Summary totals for Direct, Level, Sponsor and Combined
+ */
+function getReportIncomeSummary(array $filters = []): array {
+    $db = getDb();
+    if (!$db) return ['direct' => 0, 'level' => 0, 'sponsor' => 0, 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['user'])) {
+        $where[] = "(u.username LIKE :usr OR u.full_name LIKE :usr OR inc.user_id = :uid)";
+        $params['usr'] = '%' . trim($filters['user']) . '%';
+        $params['uid'] = (int)$filters['user'];
+    }
+    if (!empty($filters['date_from'])) {
+        $where[] = "DATE(inc.created_at) >= :dfrom";
+        $params['dfrom'] = $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+        $where[] = "DATE(inc.created_at) <= :dto";
+        $params['dto'] = $filters['date_to'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $stmt = $db->prepare("
+            SELECT 
+                SUM(CASE WHEN inc.income_type = 'DIRECT' THEN inc.amount ELSE 0 END) as direct_total,
+                SUM(CASE WHEN inc.income_type = 'LEVEL' THEN inc.amount ELSE 0 END) as level_total,
+                SUM(CASE WHEN inc.income_type = 'SPONSOR' THEN inc.amount ELSE 0 END) as sponsor_total,
+                SUM(inc.amount) as grand_total
+            FROM incomes inc
+            JOIN users u ON inc.user_id = u.id
+            WHERE {$whereSql}
+        ");
+        $stmt->execute($params);
+        $res = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return [
+            'direct'  => (float)($res['direct_total'] ?? 0),
+            'level'   => (float)($res['level_total'] ?? 0),
+            'sponsor' => (float)($res['sponsor_total'] ?? 0),
+            'total'   => (float)($res['grand_total'] ?? 0)
+        ];
+    } catch (PDOException $e) {
+        return ['direct' => 0, 'level' => 0, 'sponsor' => 0, 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 3: Sponsor / Direct Referral Network Report
+ */
+function getReportSponsor(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['search'])) {
+        $where[] = "(sp.username LIKE :q OR sp.full_name LIKE :q OR sp.email LIKE :q)";
+        $params['q'] = '%' . trim($filters['search']) . '%';
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(DISTINCT sp.id) 
+            FROM users sp
+            JOIN users u ON u.sponsor_id = sp.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT 
+                sp.id as sponsor_id,
+                sp.username as sponsor_username,
+                sp.full_name as sponsor_name,
+                sp.current_level,
+                sp.created_at as registration_date,
+                COUNT(u.id) as total_direct_members,
+                SUM(CASE WHEN u.status = 'active' THEN 1 ELSE 0 END) as active_direct_members
+            FROM users sp
+            JOIN users u ON u.sponsor_id = sp.id
+            WHERE {$whereSql}
+            GROUP BY sp.id
+            ORDER BY total_direct_members DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 4: Team & Binary Hierarchy Report
+ */
+function getReportTeam(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['user'])) {
+        $where[] = "(u.username LIKE :usr OR u.full_name LIKE :usr)";
+        $params['usr'] = '%' . trim($filters['user']) . '%';
+    }
+    if (!empty($filters['sponsor'])) {
+        $where[] = "(sp.username LIKE :sp OR sp.full_name LIKE :sp)";
+        $params['sp'] = '%' . trim($filters['sponsor']) . '%';
+    }
+    if (!empty($filters['level']) && is_numeric($filters['level'])) {
+        $where[] = "u.current_level = :lvl";
+        $params['lvl'] = (int)$filters['level'];
+    }
+    if (!empty($filters['position']) && in_array(strtolower($filters['position']), ['left', 'right'], true)) {
+        $where[] = "u.position = :pos";
+        $params['pos'] = strtolower($filters['position']);
+    }
+    if (!empty($filters['status']) && in_array($filters['status'], ['active', 'pending', 'blocked'], true)) {
+        $where[] = "u.status = :st";
+        $params['st'] = $filters['status'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(*) 
+            FROM users u
+            LEFT JOIN users sp ON u.sponsor_id = sp.id
+            LEFT JOIN users parent ON u.parent_id = parent.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT u.id, u.username, u.full_name, u.current_level, u.position, u.status, u.created_at,
+                   sp.username as sponsor_username, sp.full_name as sponsor_name,
+                   parent.username as parent_username, parent.full_name as parent_name
+            FROM users u
+            LEFT JOIN users sp ON u.sponsor_id = sp.id
+            LEFT JOIN users parent ON u.parent_id = parent.id
+            WHERE {$whereSql}
+            ORDER BY u.id DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 5: Upgrade Requests Report
+ */
+function getReportUpgrades(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['user'])) {
+        $where[] = "(u.username LIKE :usr OR u.full_name LIKE :usr)";
+        $params['usr'] = '%' . trim($filters['user']) . '%';
+    }
+    if (!empty($filters['level']) && is_numeric($filters['level'])) {
+        $where[] = "upg.from_level = :flvl";
+        $params['flvl'] = (int)$filters['level'];
+    }
+    if (!empty($filters['requested_level']) && is_numeric($filters['requested_level'])) {
+        $where[] = "upg.to_level = :tlvl";
+        $params['tlvl'] = (int)$filters['requested_level'];
+    }
+    if (!empty($filters['status']) && in_array($filters['status'], ['pending', 'approved', 'rejected'], true)) {
+        $where[] = "upg.status = :st";
+        $params['st'] = $filters['status'];
+    }
+    if (!empty($filters['date_from'])) {
+        $where[] = "DATE(upg.created_at) >= :dfrom";
+        $params['dfrom'] = $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+        $where[] = "DATE(upg.created_at) <= :dto";
+        $params['dto'] = $filters['date_to'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(*) 
+            FROM upgrades upg
+            JOIN users u ON upg.user_id = u.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT upg.*, u.username, u.full_name, u.mobile, u.email
+            FROM upgrades upg
+            JOIN users u ON upg.user_id = u.id
+            WHERE {$whereSql}
+            ORDER BY upg.id DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 6: Withdrawals Report
+ */
+function getReportWithdrawals(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['user'])) {
+        $where[] = "(u.username LIKE :usr OR u.full_name LIKE :usr)";
+        $params['usr'] = '%' . trim($filters['user']) . '%';
+    }
+    if (!empty($filters['status']) && in_array(strtolower($filters['status']), ['pending', 'approved', 'processing', 'paid', 'rejected'], true)) {
+        $where[] = "w.status = :st";
+        $params['st'] = strtolower($filters['status']);
+    }
+    if (!empty($filters['date_from'])) {
+        $where[] = "DATE(w.created_at) >= :dfrom";
+        $params['dfrom'] = $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+        $where[] = "DATE(w.created_at) <= :dto";
+        $params['dto'] = $filters['date_to'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(*) 
+            FROM withdrawals w
+            JOIN users u ON w.user_id = u.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT w.*, u.username, u.full_name, u.mobile
+            FROM withdrawals w
+            JOIN users u ON w.user_id = u.id
+            WHERE {$whereSql}
+            ORDER BY w.id DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 7: KYC Verification Report
+ */
+function getReportKyc(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['user'])) {
+        $where[] = "(u.username LIKE :usr OR u.full_name LIKE :usr)";
+        $params['usr'] = '%' . trim($filters['user']) . '%';
+    }
+    if (!empty($filters['status']) && in_array(strtolower($filters['status']), ['pending', 'approved', 'rejected'], true)) {
+        $where[] = "k.status = :st";
+        $params['st'] = strtolower($filters['status']);
+    }
+    if (!empty($filters['date_from'])) {
+        $where[] = "DATE(k.created_at) >= :dfrom";
+        $params['dfrom'] = $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+        $where[] = "DATE(k.created_at) <= :dto";
+        $params['dto'] = $filters['date_to'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(*) 
+            FROM kyc k
+            JOIN users u ON k.user_id = u.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT k.*, u.username, u.full_name, u.mobile
+            FROM kyc k
+            JOIN users u ON k.user_id = u.id
+            WHERE {$whereSql}
+            ORDER BY k.id DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * REPORT QUERY 8: Financial Transactions Ledger Report
+ */
+function getReportTransactions(array $filters = [], int $limit = 50, int $offset = 0): array {
+    $db = getDb();
+    if (!$db) return ['records' => [], 'total' => 0];
+
+    $where = ["1=1"];
+    $params = [];
+
+    if (!empty($filters['user'])) {
+        $where[] = "(u.username LIKE :usr OR u.full_name LIKE :usr)";
+        $params['usr'] = '%' . trim($filters['user']) . '%';
+    }
+    if (!empty($filters['type']) && in_array(strtolower($filters['type']), ['credit', 'debit'], true)) {
+        $where[] = "t.transaction_type = :ttype";
+        $params['ttype'] = strtolower($filters['type']);
+    }
+    if (!empty($filters['category'])) {
+        $where[] = "t.category = :cat";
+        $params['cat'] = trim($filters['category']);
+    }
+    if (!empty($filters['date_from'])) {
+        $where[] = "DATE(t.created_at) >= :dfrom";
+        $params['dfrom'] = $filters['date_from'];
+    }
+    if (!empty($filters['date_to'])) {
+        $where[] = "DATE(t.created_at) <= :dto";
+        $params['dto'] = $filters['date_to'];
+    }
+
+    $whereSql = implode(" AND ", $where);
+
+    try {
+        $cStmt = $db->prepare("
+            SELECT COUNT(*) 
+            FROM transactions t
+            JOIN users u ON t.user_id = u.id
+            WHERE {$whereSql}
+        ");
+        $cStmt->execute($params);
+        $total = (int)$cStmt->fetchColumn();
+
+        $stmt = $db->prepare("
+            SELECT t.*, u.username, u.full_name
+            FROM transactions t
+            JOIN users u ON t.user_id = u.id
+            WHERE {$whereSql}
+            ORDER BY t.id DESC
+            LIMIT :offset, :limit
+        ");
+        foreach ($params as $k => $v) {
+            $stmt->bindValue(":{$k}", $v);
+        }
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'records' => $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [],
+            'total'   => $total
+        ];
+    } catch (PDOException $e) {
+        return ['records' => [], 'total' => 0];
+    }
+}
+
+/**
+ * Sanitize cell content for CSV Export to prevent Spreadsheet Formula Injection
+ * Escapes characters =, +, -, @
+ * 
+ * @param mixed $value
+ * @return string
+ */
+function sanitizeCsvCell(mixed $value): string {
+    $str = (string)($value ?? '');
+    if ($str !== '' && in_array(substr($str, 0, 1), ['=', '+', '-', '@'], true)) {
+        return "'" . $str;
+    }
+    return $str;
+}
+
+
 

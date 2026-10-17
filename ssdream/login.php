@@ -21,8 +21,13 @@ $errors = [];
 $loginInput = sanitize($_POST['login_identity'] ?? '');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // 1. Verify CSRF Token
-    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+    // 1. Verify Rate Limit (Brute Force Protection)
+    if (!checkRateLimit('member_login', 5, 15)) {
+        $errors[] = "Too many failed login attempts from your IP. Account login temporarily locked for 15 minutes for security.";
+    }
+
+    // 2. Verify CSRF Token
+    if (empty($errors) && !verifyCsrfToken($_POST['csrf_token'] ?? '')) {
         $errors[] = "Security session expired. Please refresh and try again.";
     }
 
@@ -39,10 +44,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($errors)) {
         $db = getDb();
         if (!$db) {
-            $errors[] = "Database connection error. Please make sure MySQL is started in XAMPP.";
+            $errors[] = "Database connection error. Please verify MySQL service is running.";
         } else {
             try {
-                // Query user by username OR email
+                // Query user by username OR email using prepared statement
                 $stmt = $db->prepare("
                     SELECT id, username, full_name, email, password, current_level, status 
                     FROM users 
@@ -55,10 +60,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($user && Security::verifyPassword($password, $user['password'])) {
                     // Check if account is suspended/blocked
                     if ($user['status'] === 'blocked') {
+                        recordFailedAttempt('member_login');
                         $errors[] = "Your account has been suspended by administration. Please contact support.";
                     } else {
-                        // Generate a clean session ID to prevent fixation attacks
-                        session_regenerate_id(true);
+                        // Clear rate limit counter on successful authentication
+                        clearRateLimit('member_login');
+
+                        // Regenerate session ID to prevent fixation attacks
+                        Security::regenerateSession();
 
                         // Store verified session variables
                         $_SESSION['user_logged_in'] = true;
@@ -73,10 +82,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         exit;
                     }
                 } else {
+                    recordFailedAttempt('member_login');
                     $errors[] = "Invalid login credentials. Please check your username/email and password.";
                 }
             } catch (PDOException $e) {
-                $errors[] = "Authentication error: " . $e->getMessage();
+                error_log("Login Error: " . $e->getMessage());
+                $errors[] = "Authentication service error. Please try again later.";
             }
         }
     }

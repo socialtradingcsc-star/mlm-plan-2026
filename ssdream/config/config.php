@@ -10,9 +10,21 @@ if (!defined('SS_DREAM_INIT')) {
     define('SS_DREAM_INIT', true);
 }
 
-// Error reporting settings (Toggle display_errors to 0 in production)
-error_reporting(E_ALL);
-ini_set('display_errors', '1');
+// Application Environment Mode ('development' or 'production')
+if (!defined('APP_ENV')) {
+    define('APP_ENV', 'development');
+}
+
+// Error reporting settings based on Environment
+if (APP_ENV === 'production') {
+    error_reporting(0);
+    ini_set('display_errors', '0');
+    ini_set('log_errors', '1');
+    ini_set('error_log', dirname(__DIR__) . '/logs/error.log');
+} else {
+    error_reporting(E_ALL);
+    ini_set('display_errors', '1');
+}
 
 // Timezone configuration (Indian Standard Time)
 date_default_timezone_set('Asia/Kolkata');
@@ -30,7 +42,6 @@ $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' || (isset(
 $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
 
 // Base application path calculation
-// Assumes standard XAMPP deployment: C:\xampp\htdocs\ssdream -> http://localhost/ssdream
 $scriptName = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? ''));
 $baseFolder = trim($scriptName, '/');
 

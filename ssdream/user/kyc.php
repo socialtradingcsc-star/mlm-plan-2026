@@ -1,6 +1,6 @@
 <?php
 /**
- * Social Service Dream - User KYC Verification Foundation
+ * Social Service Dream - User KYC Verification Center
  * Target: C:\xampp\htdocs\ssdream\user\kyc.php
  */
 
@@ -16,12 +16,6 @@ requireUserLogin();
 
 $userId = (int)$_SESSION['user_id'];
 $errors = [];
-$successMessage = '';
-
-// Allowed extensions and MIME types
-$allowedExtensions = ['jpg', 'jpeg', 'png', 'pdf'];
-$allowedMimeTypes = ['image/jpeg', 'image/png', 'application/pdf'];
-$maxFileSize = 3 * 1024 * 1024; // 3 MB
 
 // Fetch current KYC record
 $currentKyc = getUserKyc($userId);
@@ -39,92 +33,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = "Please provide the official Document Number.";
     }
 
-    // Validate uploaded file
-    if (!isset($_FILES['kyc_document']) || $_FILES['kyc_document']['error'] !== UPLOAD_ERR_OK) {
-        $uploadError = $_FILES['kyc_document']['error'] ?? UPLOAD_ERR_NO_FILE;
-        if ($uploadError === UPLOAD_ERR_NO_FILE) {
-            $errors[] = "Please select a document file to upload.";
-        } else {
-            $errors[] = "File upload failed with system code: " . $uploadError;
-        }
-    } else {
+    // Centralized File Upload Security Validation
+    $uploadVal = Security::validateUploadedFile($_FILES['kyc_document'] ?? [], ['jpg', 'jpeg', 'png', 'pdf'], 5242880);
+    if (!$uploadVal['valid']) {
+        $errors[] = $uploadVal['message'];
+    }
+
+    // Save safely if no errors
+    if (empty($errors)) {
         $file = $_FILES['kyc_document'];
+        $fileExt = $uploadVal['extension'];
+        $targetDir = ROOT_PATH . '/uploads/kyc';
 
-        // Check file size
-        if ($file['size'] > $maxFileSize) {
-            $errors[] = "File size exceeds the 3MB limit. Please upload a smaller file.";
+        if (!is_dir($targetDir)) {
+            mkdir($targetDir, 0755, true);
         }
 
-        // Validate extension
-        $fileExt = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        if (!in_array($fileExt, $allowedExtensions, true)) {
-            $errors[] = "Invalid file format. Allowed file types: JPG, JPEG, PNG, or PDF.";
-        }
+        // Generate cryptographically random secure filename
+        $safeFileName = 'kyc_' . $userId . '_' . time() . '_' . bin2hex(random_bytes(8)) . '.' . $fileExt;
+        $destination = $targetDir . '/' . $safeFileName;
 
-        // Validate MIME type
-        $finfo = finfo_open(FILEINFO_MIME_TYPE);
-        $mime = finfo_file($finfo, $file['tmp_name']);
-        finfo_close($finfo);
+        if (move_uploaded_file($file['tmp_name'], $destination)) {
+            $relativeFilePath = 'uploads/kyc/' . $safeFileName;
+            $db = getDb();
 
-        if (!in_array($mime, $allowedMimeTypes, true)) {
-            $errors[] = "Uploaded file content is not a valid image or PDF document.";
-        }
-
-        // Save safely if no errors
-        if (empty($errors)) {
-            $targetDir = ROOT_PATH . '/uploads/kyc';
-            if (!is_dir($targetDir)) {
-                mkdir($targetDir, 0755, true);
-            }
-
-            // Generate cryptographically random secure filename
-            $safeFileName = 'kyc_' . $userId . '_' . time() . '_' . bin2hex(random_bytes(8)) . '.' . $fileExt;
-            $destination = $targetDir . '/' . $safeFileName;
-
-            if (move_uploaded_file($file['tmp_name'], $destination)) {
-                $relativeFilePath = 'uploads/kyc/' . $safeFileName;
-                $db = getDb();
-
-                if ($db) {
-                    try {
-                        // Check if record exists
-                        if ($currentKyc) {
-                            $stmt = $db->prepare("
-                                UPDATE kyc SET 
-                                    pan_card_path = :path,
-                                    status = 'pending',
-                                    admin_notes = NULL,
-                                    updated_at = NOW()
-                                WHERE user_id = :uid
-                            ");
-                            $stmt->execute(['path' => $relativeFilePath, 'uid' => $userId]);
-                        } else {
-                            $stmt = $db->prepare("
-                                INSERT INTO kyc (user_id, pan_card_path, status, submitted_at)
-                                VALUES (:uid, :path, 'pending', NOW())
-                            ");
-                            $stmt->execute(['uid' => $userId, 'path' => $relativeFilePath]);
-                        }
-
-                        // Also record Document Number in user_profiles
-                        if ($docType === 'PAN Card') {
-                            $upProfile = $db->prepare("UPDATE user_profiles SET pan_number = :num WHERE user_id = :uid");
-                            $upProfile->execute(['num' => $docNumber, 'uid' => $userId]);
-                        } elseif ($docType === 'Aadhar Card') {
-                            $upProfile = $db->prepare("UPDATE user_profiles SET aadhar_number = :num WHERE user_id = :uid");
-                            $upProfile->execute(['num' => $docNumber, 'uid' => $userId]);
-                        }
-
-                        setFlashMessage('success', "Your KYC document has been uploaded securely and is now pending administrator review.");
-                        header("Location: " . BASE_URL . "/user/kyc.php");
-                        exit;
-                    } catch (PDOException $e) {
-                        $errors[] = "Database error while storing KYC record: " . $e->getMessage();
+            if ($db) {
+                try {
+                    // Check if record exists
+                    if ($currentKyc) {
+                        $stmt = $db->prepare("
+                            UPDATE kyc SET 
+                                pan_card_path = :path,
+                                status = 'pending',
+                                admin_notes = NULL,
+                                updated_at = NOW()
+                            WHERE user_id = :uid
+                        ");
+                        $stmt->execute(['path' => $relativeFilePath, 'uid' => $userId]);
+                    } else {
+                        $stmt = $db->prepare("
+                            INSERT INTO kyc (user_id, pan_card_path, status, submitted_at)
+                            VALUES (:uid, :path, 'pending', NOW())
+                        ");
+                        $stmt->execute(['uid' => $userId, 'path' => $relativeFilePath]);
                     }
+
+                    // Record Document Number in user_profiles
+                    if ($docType === 'PAN Card') {
+                        $upProfile = $db->prepare("UPDATE user_profiles SET pan_number = :num WHERE user_id = :uid");
+                        $upProfile->execute(['num' => $docNumber, 'uid' => $userId]);
+                    } elseif ($docType === 'Aadhar Card') {
+                        $upProfile = $db->prepare("UPDATE user_profiles SET aadhar_number = :num WHERE user_id = :uid");
+                        $upProfile->execute(['num' => $docNumber, 'uid' => $userId]);
+                    }
+
+                    sendNotification($userId, 'KYC Document Submitted', 'Your KYC document has been submitted for review.', 'KYC');
+
+                    setFlashMessage('success', "Your KYC document has been uploaded securely and is now pending administrator review.");
+                    header("Location: " . BASE_URL . "/user/kyc.php");
+                    exit;
+                } catch (PDOException $e) {
+                    error_log("KYC DB Error: " . $e->getMessage());
+                    $errors[] = "Database error while storing KYC record.";
                 }
-            } else {
-                $errors[] = "Failed to store uploaded file on the server. Please check directory permissions.";
             }
+        } else {
+            $errors[] = "Failed to store uploaded file on the server. Please check directory permissions.";
         }
     }
 }
@@ -138,7 +112,7 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="row g-4 justify-content-center">
     <div class="col-lg-8">
-        <div class="card border shadow-sm">
+        <div class="card border shadow-sm bg-white">
             <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
                 <h6 class="fw-bold mb-0 text-navy" style="color: #0b192c;">
                     <i class="bi bi-shield-check text-primary me-2"></i> KYC Verification Center
@@ -165,6 +139,8 @@ require_once __DIR__ . '/includes/header.php';
             </div>
 
             <div class="card-body p-4">
+                <?php echo renderFlashMessages(); ?>
+
                 <?php if (!empty($errors)): ?>
                     <div class="alert alert-danger shadow-sm small mb-4">
                         <ul class="mb-0 ps-3">
@@ -188,7 +164,7 @@ require_once __DIR__ . '/includes/header.php';
                     <div class="p-3 bg-warning bg-opacity-10 border border-warning border-opacity-25 rounded-3 mb-4 text-dark d-flex align-items-center gap-3">
                         <i class="bi bi-hourglass-split fs-2 text-warning"></i>
                         <div>
-                            <div class="fw-bold">Document Submitted & Awaiting Verification</div>
+                            <div class="fw-bold">Document Submitted &amp; Awaiting Verification</div>
                             <div class="small text-secondary">Submitted on: <?php echo date('d M Y, h:i A', strtotime($currentKyc['submitted_at'])); ?>. Verification typically takes 24-48 business hours.</div>
                         </div>
                     </div>
@@ -212,7 +188,7 @@ require_once __DIR__ . '/includes/header.php';
                                 Document Type <span class="text-danger">*</span>
                             </label>
                             <select class="form-select" id="document_type" name="document_type" required>
-                                <option value="Aadhar Card">Aadhar Card (Front & Back)</option>
+                                <option value="Aadhar Card">Aadhar Card (Front &amp; Back)</option>
                                 <option value="PAN Card">PAN Card</option>
                                 <option value="Voter ID">Voter ID</option>
                                 <option value="Passport">Passport</option>
@@ -235,16 +211,16 @@ require_once __DIR__ . '/includes/header.php';
                             <input type="file" class="form-control" id="kyc_document" name="kyc_document" 
                                    accept=".jpg,.jpeg,.png,.pdf" required>
                             <div class="form-text small">
-                                Accepted formats: <strong>JPG, JPEG, PNG, PDF</strong> (Maximum file size: 3MB).
+                                Accepted formats: <strong>JPG, JPEG, PNG, PDF</strong> (Maximum file size: 5MB).
                             </div>
                         </div>
 
                         <div class="p-3 bg-light rounded-3 border mb-4 text-secondary small">
                             <i class="bi bi-shield-lock me-1 text-primary"></i>
-                            <strong>Privacy Guarantee:</strong> Documents are stored in protected server storage (<code>uploads/kyc/</code>) and never exposed publicly.
+                            <strong>Privacy Guarantee:</strong> Documents are stored in protected server storage and accessible only via authorization proxy.
                         </div>
 
-                        <button type="submit" class="btn btn-primary-ss w-100 py-2.5 fs-6 shadow">
+                        <button type="submit" class="btn btn-primary w-100 py-2.5 fs-6 shadow fw-bold">
                             <i class="bi bi-cloud-arrow-up-fill me-1"></i> Submit Document for KYC Verification
                         </button>
                     </form>

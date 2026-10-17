@@ -85,9 +85,24 @@ $currentAdminPage = basename($_SERVER['PHP_SELF'] ?? '');
             <?php endif; ?>
         </a>
 
+        <!-- Reports Portal (Activated in Part 8) -->
+        <a href="<?php echo BASE_URL; ?>/admin/reports.php" class="admin-nav-link <?php echo (strpos($currentAdminPage, 'report') !== false) ? 'active' : ''; ?>">
+            <i class="bi bi-collection"></i> Reports &amp; Analytics
+        </a>
+
+        <!-- Notifications Dispatcher (Activated in Part 8) -->
+        <a href="<?php echo BASE_URL; ?>/admin/notifications.php" class="admin-nav-link <?php echo ($currentAdminPage === 'notifications.php') ? 'active' : ''; ?>">
+            <i class="bi bi-bell"></i> Notifications
+        </a>
+
         <!-- System Settings (Activated in Part 7) -->
         <a href="<?php echo BASE_URL; ?>/admin/settings.php" class="admin-nav-link <?php echo ($currentAdminPage === 'settings.php') ? 'active' : ''; ?>">
             <i class="bi bi-gear"></i> System Settings
+        </a>
+
+        <!-- Audit Logs (Activated in Part 8) -->
+        <a href="<?php echo BASE_URL; ?>/admin/audit-logs.php" class="admin-nav-link <?php echo ($currentAdminPage === 'audit-logs.php') ? 'active' : ''; ?>">
+            <i class="bi bi-shield-check"></i> Audit Logs
         </a>
     </nav>
 
